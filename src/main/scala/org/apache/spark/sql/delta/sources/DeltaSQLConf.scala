@@ -372,6 +372,16 @@ trait DeltaSQLConfBase {
            |""".stripMargin)
       .booleanConf
       .createWithDefault(true)
+
+  val CONCURRENT_COMPACTION_CONFLICT_DETECTION =
+    buildConf("concurrentCompactionConflictDetection.enabled")
+      .internal()
+      .doc("""
+           | When enabled, insert-only transactions will not fail due to concurrent data preserving
+           | transactions (i.e. transactions with dataChange=false, such as compaction).
+           |""".stripMargin)
+      .booleanConf
+      .createWithDefault(false)
 }
 
 object DeltaSQLConf extends DeltaSQLConfBase
