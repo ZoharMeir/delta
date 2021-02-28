@@ -31,7 +31,7 @@ import org.apache.spark.util.ThreadUtils
 
 import scala.concurrent.ExecutionContext.Implicits.global
 import scala.concurrent.Future
-import scala.concurrent.duration.Duration
+import scala.concurrent.duration
 import scala.reflect.{ClassTag, classTag}
 
 class MergeIntoScalaSuite extends MergeIntoSuiteBase  with DeltaSQLCommandTest {
@@ -617,7 +617,7 @@ class MergeIntoScalaSuite extends MergeIntoSuiteBase  with DeltaSQLCommandTest {
     }
 
     runCompactionLop = false
-    ThreadUtils.awaitReady(compactionFuture, Duration.Inf)
+    ThreadUtils.awaitReady(compactionFuture, duration.Duration.create(5, duration.MINUTES))
     runCompaction(location)
     val table = io.delta.tables.DeltaTable.forPath(spark, location)
     withSQLConf(DeltaSQLConf.DELTA_VACUUM_RETENTION_CHECK_ENABLED.key -> "false") {
