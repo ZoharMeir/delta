@@ -535,43 +535,48 @@ class MergeIntoScalaSuite extends MergeIntoSuiteBase  with DeltaSQLCommandTest {
   }
 
   def withConcurrentCompactionTestSetup(toggle: Boolean)(closure: String => Unit): Unit = {
+    // in order to slow down the merge operation and increase the conflict probability,
+    // we use a UDF with sleep as the merge condition
+    spark.udf.register("slowMergeCondition", (condition: Boolean) => {
+      Thread.sleep(10)
+      condition
+    })
+
     withTempDir { dir =>
-      withSQLConf(DeltaSQLConf.CONCURRENT_COMPACTION_CONFLICT_DETECTION.key -> toggle.toString) {
+      withSQLConf(DeltaSQLConf.CONCURRENT_COMPACTION_CONFLICT_DETECTION.key -> toggle.toString,
+                  // we enable merge repartition before write to slow down the merge operation,
+                  // thus increasing conflict probability
+                  DeltaSQLConf.MERGE_REPARTITION_BEFORE_WRITE.key -> "true") {
         closure(dir.getAbsolutePath)
       }
     }
   }
 
+  val concurrentCompactionTestPartitions = 3
+  val concurrentCompactionTestRangeSize = 10
+  val concurrentCompactionTestNumIterations = 10
+
   def createConcurrentCompactionTestTable(location: String): Unit = {
-    spark.range(0).withColumn("par", $"id" % 3).coalesce(1)
+    spark.range(0)
+            .withColumn("par", $"id" % concurrentCompactionTestPartitions)
+            .coalesce(1)
             .write.partitionBy("par").format("delta").save(location)
   }
 
-  def runCompaction(location: String): Unit = {
-    spark.read.format("delta")
-            .load(location)
-            .coalesce(1)
-            .write.format("delta")
-            .mode("overwrite")
-            .option("dataChange", "false")
-            .save(location)
-  }
-
-  val concurrentCompactionTestRangeSize = 10
-  val concurrentCompactionTestNumIterations = 100
-
   def executeConcurrentCompactionTestInsertOnlyMerge(location: String, i: Int): Unit = {
-    val df = spark.range(i, i + concurrentCompactionTestRangeSize).withColumn("par", $"id" % 3)
+    val df = spark.range(i, i + concurrentCompactionTestRangeSize)
+            .withColumn("par", $"id" % concurrentCompactionTestPartitions)
     val table = io.delta.tables.DeltaTable.forPath(spark, location)
-    table.alias("t").merge(df.alias("s"), "s.par=t.par AND s.id=t.id")
+    table.alias("t").merge(df.alias("s"), "slowMergeCondition(s.par=t.par AND s.id=t.id)")
             .whenNotMatched().insertAll()
             .execute()
   }
 
   def executeConcurrentCompactionTestUpsertMerge(location: String, i: Int): Unit = {
-    val df = spark.range(i, i + concurrentCompactionTestRangeSize).withColumn("par", $"id" % 3)
+    val df = spark.range(i, i + concurrentCompactionTestRangeSize)
+            .withColumn("par", $"id" % concurrentCompactionTestPartitions)
     val table = io.delta.tables.DeltaTable.forPath(spark, location)
-    table.alias("t").merge(df.alias("s"), "s.par=t.par AND s.id=t.id")
+    table.alias("t").merge(df.alias("s"), "slowMergeCondition(s.par=t.par AND s.id=t.id)")
             .whenNotMatched().insertAll()
             .whenMatched().updateAll()
             .execute()
@@ -580,13 +585,28 @@ class MergeIntoScalaSuite extends MergeIntoSuiteBase  with DeltaSQLCommandTest {
   def assertConcurrentCompactionTestResults(location: String): Unit = {
     val expectedDF = spark
             .range(concurrentCompactionTestNumIterations + concurrentCompactionTestRangeSize - 1)
-            .withColumn("par", $"id" % 3).orderBy("id")
+            .withColumn("par", $"id" % concurrentCompactionTestPartitions)
+            .orderBy("id")
     val deltaResultDF = spark.read.format("delta").load(location).orderBy("id")
     checkAnswer(deltaResultDF, expectedDF)
     // make sure no extra files were left after last vacuum
     // this is a safety check to see that we are not leaving any untracked files in the table
     val parquetResultDF = spark.read.parquet(location).orderBy("id")
     checkAnswer(parquetResultDF, expectedDF)
+  }
+
+  def runCompaction(location: String): Unit = {
+    val table = io.delta.tables.DeltaTable.forPath(spark, location)
+    val lastTableOperation = table.history(1).select("operation").head().getString(0)
+    if (lastTableOperation == "MERGE") {
+      spark.read.format("delta")
+              .load(location)
+              .coalesce(1)
+              .write.format("delta")
+              .mode("overwrite")
+              .option("dataChange", "false")
+              .save(location)
+    }
   }
 
   class NoException extends Throwable
