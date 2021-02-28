@@ -381,7 +381,7 @@ trait DeltaSQLConfBase {
            | transactions (i.e. transactions with dataChange=false, such as compaction).
            |""".stripMargin)
       .booleanConf
-      .createWithDefault(false)
+      .createWithDefault(true)
 }
 
 object DeltaSQLConf extends DeltaSQLConfBase
